@@ -17,8 +17,8 @@ stopifnot(str_ends(getwd(), "Covid19-modeling/analyze"))
 
 set.seed(19481210)
 
-states <- c("CA", "FL", "NY", "WA")
-ps <- c(0.005, 0.01, 0.015)
+states <- c("TX", "CA", "FL", "GA", "OH", "PA", "AZ", "IL")
+ps <- c(0.005, 0.01)
 
 ##-----GLOBAL vars
 for (State in states) {
@@ -30,37 +30,30 @@ for (State in states) {
       runtag <- glue("{tolower(State)}")
       parser <- ArgumentParser()
       parser$add_argument("--funs", default="src/functions.R")
-      parser$add_argument("--mcmc_output",
-                          default=glue("output/mcmc_sim_{runtag}_{p_str}.RData"))
-      parser$add_argument("--theta", default="output/theta.rds")
-      parser$add_argument("--pops", default="input/pop_data.csv")
-      parser$add_argument("--state_abbreviations", default="input/state_abbrev.csv")
-      parser$add_argument("--state_deaths", default="input/us-states-20200418.csv")
-      parser$add_argument("--state_forecast", default=glue("output/{State}_Death_forecast.png"))
-      parser$add_argument("--state_fit", default=glue("output/{State}_{p_str}.png"))
+      parser$add_argument("--pop", default="general") # 'incarcerated', 'staff'
+      parser$add_argument("--theta", default="output_general/theta.rds")
       parser$parse_args()
     }
     args <- getargs()
     
+    args[["mcmc_output"]] <- glue("output_{args$pop}/mcmc_sim_{runtag}_{p_str}.RData")
+    args[["state_forecast"]] <- glue("output_{args$pop}/{State}_Death_forecast.png")
+    args[["state_fit"]] <- glue("output_{args$pop}/{State}_{p_str}.png")
+    
     source(args$funs)
     
-    pops <- read_csv(args$pops)
-    abbrev <- read_csv(args$state_abbreviations)
-    pops <- pops %>% inner_join(abbrev, by=c("State"="state"))
-    
-    N <- pops$Pop2018[pops$abbreviation == State]
-    
-    # https://github.com/nytimes/covid-19-data
-    dat <- read_csv(args$state_deaths)  # snapshot of NYT data as of 18 April
-    dat$date <- ymd(as.character(dat$date))
-    
-    deaths <- dat %>% 
-      left_join(abbrev) %>%
-      filter(abbreviation == State) %>% 
-      select(date, deaths) %>%
-      arrange(date) %>% 
-      mutate(death_increase=deaths-lag(deaths)) %>%
-      replace_na(list(death_increase=0))
+    if (args$pop == 'general') {
+      datas <- load.data.general(State = State)
+    } else if (args$pop == 'incarcerated') {
+      datas <- load.data.incarcerated(State = State)
+    } else if (args$pop == 'staff') {
+      datas <- load.data.jail.staff(State = State)
+    } else {
+      stop("'pop' argument must be one of 'general', 'incarcerated', or 'staff'")
+    }
+    deaths <- datas$deaths
+    pops <- datas$pops
+    N <- datas$N
     
     n.to.add <- as.numeric(min(deaths$date) - ymd("20200101"))
     Ds <- c(rep(0, n.to.add), deaths$death_increase)

@@ -10,7 +10,7 @@
 #
 
 if (!require('pacman')) {install.packages('pacman')}
-pacman::p_load(mvtnorm, EpiDynamics, extraDistr)
+pacman::p_load(mvtnorm, EpiDynamics, extraDistr, zoo)
 
 simulate.sir.synthetic.data <- function(N, beta, gammar, I, T, max.time, theta, p) {
   if (length(beta) == 1) {
@@ -311,7 +311,7 @@ run.mcmc <- function(nmc, theta, beta, gammar, T, I, Ds, Nus, xi, zeta, disp.int
               + log.T0prior(T0, zeta.T0))
   mus <- calculate.death.means(Nus, theta, p)
   ll.curr <- sum(dpois(Ds, mus, log=T)) + lp.curr
-  
+
   t1 <- proc.time()
   for (t in 1:nmc) {
 
@@ -453,7 +453,7 @@ propose.sir.state <- function(beta, gammar, I, T, p, Nus, Ds, xi, zeta, ll.curr,
               + log.gprior(1 / gammar.prop, zeta) 
               + log.T0prior(T0.prop, zeta.T0)
               + log.phiprior(phi.prop, zeta.phi))
-
+  #print(lp.prop)
   if (!is.infinite(lp.prop)) {
 
     sim1 <- simulate.sir.timebreak(beta.prop, gammar.prop, I, N, T0.prop, T, T1, phi.prop)
@@ -463,6 +463,8 @@ propose.sir.state <- function(beta, gammar, I, T, p, Nus, Ds, xi, zeta, ll.curr,
 
     mus.prop <- calculate.death.means(Nus.prop, theta, p)
     ll.prop <- sum(dpois(Ds, mus.prop, log=T)) + lp.prop
+    # print(ll.curr)
+    # print(ll.prop)
 
     log.prob <- ll.prop - ll.curr
     acc <- exp(log.prob) > runif(1)
@@ -472,6 +474,7 @@ propose.sir.state <- function(beta, gammar, I, T, p, Nus, Ds, xi, zeta, ll.curr,
 
   if (is.na(acc) | is.infinite(acc)) {
     print('check')
+    #print(acc)
   }
 
   if (acc) {
@@ -538,7 +541,7 @@ run.mcmc.state <- function(nmc, theta, beta, gammar, T, I, Ds, Nus, xi, zeta, di
               + log.phiprior(phi, zeta.phi))
   mus <- calculate.death.means(Nus, theta, p)
   ll.curr <- sum(dpois(Ds, mus, log=T)) + lp.curr
-  
+
   t1 <- proc.time()
   for (t in 1:nmc) {
     # sample parameters
@@ -590,6 +593,123 @@ run.mcmc.state <- function(nmc, theta, beta, gammar, T, I, Ds, Nus, xi, zeta, di
   }
 
   return(list(BETA=BETA, NUS=NUS, ACC=ACC, GAMMAR=GAMMAR, T0S=T0S, SIS=SIS, PHIS=PHIS))
+}
+
+load.data.general <- function(
+  death_ts = "input/us-states-20200821.csv", 
+  pop_csv = "input/pop_data.csv", 
+  abbrevs = "input/state_abbrev.csv", 
+  State = "CA"
+) {
+  
+  # function that loads death and population data from general pop or prison
+  #death_ts : input file with death/case time series
+  #pop_csv: input file with population
+  #abbrevs: input file with state abbreviations
+  #State: state that we are analyzing
+  
+  deaths <- read_csv(death_ts)
+  pops <- read_csv(pop_csv)
+
+  # https://github.com/nytimes/covid-19-data 
+  # snapshot as of 21 August 
+  deaths$date <- ymd(as.character(deaths$date))
+  abbrev <- read_csv(abbrevs)
+  deaths <- deaths %>% left_join(abbrev)
+  pops <- pops %>% inner_join(abbrev, by=c("State"="state"))
+  N <- pops$Pop2018[pops$abbreviation == State]
+  
+  deaths <- deaths %>%
+    filter(abbreviation == State) %>% 
+    select(date, deaths) %>%
+    arrange(date)
+  
+  deaths <- deaths %>%
+    mutate(death_increase=deaths - lag(deaths)) %>%
+    replace_na(list(death_increase=0))
+  return(list(deaths=deaths, pops=pops, N=N))
+}
+
+load.data.incarcerated <- function(
+  death_ts = "input/covid_prison_cases.csv", 
+  pop_csv = "input/prison_populations.csv", 
+  State = "CA"
+) {
+  
+  # function that loads death and population data from incarcerated population
+  #death_ts : input file with death/case time series
+  #pop_csv: input file with population
+  #State: state that we are analyzing
+  
+  deaths <- read_csv(death_ts)
+  pops <- read_csv(pop_csv)
+  
+  # https://github.com/themarshallproject/COVID_prison_data
+  # snapshot as of 21 August
+  deaths$date <- mdy(as.character(deaths$as_of_date))
+  
+  march <- pops$march_pop[pops$abbreviation == State]
+  april <- pops$april_pop[pops$abbreviation == State]
+  june <- pops$june_pop[pops$abbreviation == State]
+  N <- round(mean(c(march, april, june)), 0)
+
+  deaths <- deaths %>%
+    filter(abbreviation == State) %>% 
+    select(date, total_prisoner_deaths) %>% 
+    arrange(date)
+  
+  deaths <- data.frame(date = seq(deaths$date[1], deaths$date[nrow(deaths)], by = 1)) %>%
+    full_join(deaths, by = "date") %>%
+    mutate(total_prisoner_deaths = round(na.approx(total_prisoner_deaths), 0))
+
+  deaths <- deaths %>%
+    mutate(death_increase=total_prisoner_deaths - lag(total_prisoner_deaths)) %>%
+    replace_na(list(death_increase=0))
+  
+  return(list(deaths=deaths, pops=pops, N=N))
+}
+
+load.data.jail.staff <- function(
+  death_ts = "input/covid_prison_cases.csv", 
+  pop_csv = "input/staff_populations.csv", 
+  State = "CA"
+) {
+  
+  # function that loads death and population data from incarcerated population
+  #death_ts : input file with death/case time series
+  #pop_csv: input file with population
+  #State: state that we are analyzing
+  
+  deaths <- read_csv(death_ts)
+  pops <- read_csv(pop_csv)
+  
+  # https://github.com/themarshallproject/COVID_prison_data
+  # snapshot as of 21 August
+  deaths$date <- mdy(as.character(deaths$as_of_date))
+  
+  N <- pops$april_pop[pops$abbreviation == State]
+  
+  deaths <- deaths %>%
+    filter(abbreviation == State) %>% 
+    select(date, total_staff_deaths) %>%
+    arrange(date)
+  
+  dates <- data.frame(date = seq(deaths$date[1], deaths$date[nrow(deaths)], by = 1))
+  
+  if (State == "AZ") {
+    deaths <- dates %>%
+      full_join(deaths, by = "date") %>%
+      mutate(total_staff_deaths = c(round(na.approx(total_staff_deaths), 0),rep(1,56)))
+  } else {
+    deaths <- dates %>%
+      full_join(deaths, by = "date") %>%
+      mutate(total_staff_deaths = round(na.approx(total_staff_deaths), 0))
+  }
+  deaths <- deaths %>%
+    mutate(death_increase=total_staff_deaths - lag(total_staff_deaths)) %>%
+    replace_na(list(death_increase=0))
+  
+  return(list(deaths=deaths, pops=pops, N=N))
 }
 
 # done.
